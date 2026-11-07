@@ -21,3 +21,12 @@ export const POSITION_LABEL: Record<string, string> = {
   utility: 'Support',
   '': '',
 };
+
+export const POSITION_SHORT: Record<string, string> = {
+  top: 'Top',
+  jungle: 'Jg',
+  middle: 'Mid',
+  bottom: 'Bot',
+  utility: 'Sup',
+  '': '',
+};

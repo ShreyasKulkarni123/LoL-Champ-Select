@@ -1,4 +1,4 @@
-import type { ChampSelectView, MyAction, PlayerSlot, Position } from './protocol.js';
+import type { ChampSelectView, MyAction, PlayerSlot, Position, SwapKind, SwapOption } from './protocol.js';
 
 /* Subset of the raw `/lol-champ-select/v1/session` payload that we use. */
 
@@ -26,8 +26,18 @@ export interface LcuAction {
   type: string; // 'pick' | 'ban' | 'ten_bans_reveal' | ...
 }
 
+/** Entry of `trades`, `pickOrderSwaps` or `positionSwaps`: the swap between you and `cellId`. */
+export interface LcuSwap {
+  id: number;
+  cellId: number;
+  state: string; // 'AVAILABLE' | 'BUSY' | 'INVALID' | 'RECEIVED' | 'SENT' | ...
+}
+
 export interface LcuSession {
   localPlayerCellId: number;
+  trades?: LcuSwap[];
+  pickOrderSwaps?: LcuSwap[];
+  positionSwaps?: LcuSwap[];
   isSpectating?: boolean;
   myTeam: LcuMember[];
   theirTeam: LcuMember[];
@@ -70,6 +80,18 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
   const actionsBy = (cellId: number, type: string) => actions.filter((a) => a.actorCellId === cellId && a.type === type);
   const inProgress = actions.filter((a) => a.isInProgress && !a.completed);
 
+  // Pick order per team: rank of each player's first pick action in the action sequence.
+  const pickOrder = new Map<number, number>();
+  for (const team of [session.myTeam, session.theirTeam]) {
+    const cells = new Set(team.map((m) => m.cellId));
+    let n = 0;
+    for (const a of actions) {
+      if (a.type === 'pick' && cells.has(a.actorCellId) && !pickOrder.has(a.actorCellId)) {
+        pickOrder.set(a.actorCellId, ++n);
+      }
+    }
+  }
+
   const slot = (m: LcuMember): PlayerSlot => {
     const picks = actionsBy(m.cellId, 'pick');
     const completedPick = picks.find((a) => a.completed && a.championId > 0);
@@ -94,6 +116,7 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
       isActing: inProgress.some((a) => a.actorCellId === m.cellId),
       spell1Id: m.spell1Id ?? 0,
       spell2Id: m.spell2Id ?? 0,
+      pickOrder: pickOrder.get(m.cellId) ?? 0,
     };
   };
 
@@ -139,6 +162,7 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
     bannableChampionIds: extras.bannableChampionIds ?? [],
     unavailableChampionIds: [...unavailable],
     isSpectating: Boolean(session.isSpectating),
+    swaps: collectSwaps(session),
     activeActionType: inProgress.some((a) => a.type === 'ban')
       ? 'ban'
       : inProgress.some((a) => a.type === 'pick')
@@ -146,6 +170,26 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
         : null,
     turnDescription: describeTurn(phase, inProgress, local, myCells),
   };
+}
+
+const SWAP_SOURCES: Array<[SwapKind, keyof Pick<LcuSession, 'trades' | 'pickOrderSwaps' | 'positionSwaps'>]> = [
+  ['pickOrder', 'pickOrderSwaps'],
+  ['position', 'positionSwaps'],
+  ['champion', 'trades'],
+];
+
+function collectSwaps(session: LcuSession): SwapOption[] {
+  if (session.isSpectating) return [];
+  const out: SwapOption[] = [];
+  for (const [kind, key] of SWAP_SOURCES) {
+    for (const s of session[key] ?? []) {
+      if (s.cellId === session.localPlayerCellId) continue;
+      const state = String(s.state ?? '').toUpperCase();
+      if (!state || state === 'INVALID') continue;
+      out.push({ id: s.id, kind, cellId: s.cellId, state });
+    }
+  }
+  return out;
 }
 
 function describeTurn(phase: string, inProgress: LcuAction[], local: number, myCells: Set<number>): string {

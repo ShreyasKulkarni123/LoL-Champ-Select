@@ -69,3 +69,37 @@ test('parses lockfile and process command line', () => {
     { port: 50000, password: 'tok_EN-1', protocol: 'https' },
   );
 });
+
+test('exposes swaps with teammates and pick order', () => {
+  const v = buildChampSelectView({
+    localPlayerCellId: 1,
+    myTeam: [member(0), member(1), member(2)],
+    theirTeam: [member(5), member(6)],
+    actions: [
+      [action(1, 0, 'pick')],
+      [action(2, 5, 'pick'), action(3, 6, 'pick')],
+      [action(4, 2, 'pick'), action(5, 1, 'pick')],
+    ],
+    pickOrderSwaps: [
+      { id: 10, cellId: 0, state: 'AVAILABLE' },
+      { id: 11, cellId: 1, state: 'INVALID' },
+      { id: 12, cellId: 2, state: 'received' },
+    ],
+    positionSwaps: [{ id: 20, cellId: 0, state: 'INVALID' }],
+    trades: [{ id: 30, cellId: 2, state: 'BUSY' }],
+    timer: { phase: 'PLANNING' },
+  });
+  assert.deepEqual(v.swaps, [
+    { id: 10, kind: 'pickOrder', cellId: 0, state: 'AVAILABLE' },
+    { id: 12, kind: 'pickOrder', cellId: 2, state: 'RECEIVED' },
+    { id: 30, kind: 'champion', cellId: 2, state: 'BUSY' },
+  ]);
+  assert.deepEqual(
+    v.myTeam.map((p) => p.pickOrder),
+    [1, 3, 2],
+  );
+  assert.deepEqual(
+    v.theirTeam.map((p) => p.pickOrder),
+    [1, 2],
+  );
+});

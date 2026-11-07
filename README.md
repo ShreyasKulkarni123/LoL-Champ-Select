@@ -5,11 +5,16 @@ Do champ select from your phone when you're away from your computer. You can:
 - **accept the ready check** when a match is found
 - see **both teams' picks**, your teammates' hovers, and **ally and enemy bans**, with the phase timer
 - browse **your unlocked champions** (owned plus free rotation), search them, **hover** one, and **lock in** or **ban**
+- **swap with teammates**: trade **roles**, **pick order** or **locked-in champions**, and accept or decline their requests
 
 <p>
   <img src="docs/ready-check.png" width="220" alt="Ready check screen">
   <img src="docs/ban.png" width="220" alt="Ban phase">
   <img src="docs/pick.png" width="220" alt="Pick phase">
+</p>
+<p>
+  <img src="docs/swap-sheet.png" width="220" alt="Swap options with a teammate">
+  <img src="docs/swap-request.png" width="220" alt="Incoming champion trade request">
 </p>
 
 <sub>These screenshots come from the built-in mock client, so champion icons are coloured placeholders. With the real client you get the real icons.</sub>
@@ -71,7 +76,8 @@ Change `bundleIdentifier` and `package` in `mobile/app.json` first.
 ### Try it without League running
 
 The companion includes a fake League Client. It runs lobby → queue → ready check → a ranked-style draft with bot
-teammates and enemies, and loops forever:
+teammates and enemies, and loops forever. Bot teammates also answer your swap requests (and accept most of them), ask you for a role swap
+during planning, and offer a champion trade during finalization:
 
 ```bash
 cd companion
@@ -80,6 +86,24 @@ npm run dev:mock -- --speed 3    # everything 3x faster
 ```
 
 Pair the phone with it the same way. Your own turns wait for you, just like the real thing.
+
+## Swaps and trades
+
+When a swap with a teammate is possible, a **⇄** badge appears on their row. Tap the row to see what's on offer, with
+what you'd end up with if they accept:
+
+| Swap | When the client offers it | Effect |
+|---|---|---|
+| **Swap roles** | Ranked queues with assigned positions, usually during the planning phase | You exchange assigned positions |
+| **Swap pick order** | Before either of you has started picking | You exchange pick turns; each of you keeps your hover |
+| **Trade champions** | After both of you have locked in, until the game starts | You exchange locked-in champions (you both need to own them) |
+
+When a teammate sends you a request, a banner appears above the lock-in button with **Accept** and **Decline**, and
+the phone vibrates. While your own request is pending, the banner shows **Cancel request**. Only one swap can be pending
+at a time; while one is, other players show as busy.
+
+The companion doesn't decide what's allowed. It shows exactly the swaps the League Client reports as available.
+Which swaps you get depends on the queue.
 
 ## Using it away from home
 
@@ -116,14 +140,15 @@ LCU endpoints used:
 | Champ select state | `GET /lol-champ-select/v1/session` |
 | Unlocked / bannable champions | `GET /lol-champ-select/v1/pickable-champion-ids`, `GET /lol-champ-select/v1/bannable-champion-ids` |
 | Hover / lock in / ban | `PATCH /lol-champ-select/v1/session/actions/{id}` with `{ championId }` or `{ championId, completed: true }` |
+| Swaps and trades | `POST /lol-champ-select/v1/session/{position-swaps,pick-order-swaps,trades}/{id}/{request,accept,decline,cancel}`; availability comes from the session's `positionSwaps`, `pickOrderSwaps` and `trades` arrays |
 | Ready check | `POST /lol-matchmaking/v1/ready-check/accept` and `/decline` |
 | Champion names and icons | `/lol-game-data/assets/v1/champion-summary.json`, `/lol-game-data/assets/v1/champion-icons/{id}.png` |
 | Teammate names | `GET /lol-summoner/v2/summoners/puuid/{puuid}` |
 
 ## Not included yet
 
-Ideas for later: rune page and summoner spell editing, bench swaps in ARAM, pick-order and position trades, and push
-notifications while the app is in the background. For now, keep the app open (it keeps the screen awake during queue
+Ideas for later: rune page and summoner spell editing, bench swaps in ARAM, and push notifications while the app is in
+the background. For now, keep the app open (it keeps the screen awake during queue
 and champ select, and vibrates when it's your turn).
 
 ## Disclaimer

@@ -22,6 +22,26 @@ interface MockOptions {
   speed?: number;
   /** Stay in champ select forever (no ready check, no game). Useful for UI work. */
   champSelectOnly?: boolean;
+  /** Probability a bot teammate accepts your swap request (default 0.75). */
+  botAcceptRate?: number;
+  /** Whether bot teammates send you swap requests themselves (default true). */
+  botSwapRequests?: boolean;
+}
+
+type SwapKind = 'pickOrder' | 'position' | 'champion';
+const SWAP_ROUTES: Record<string, SwapKind> = {
+  'pick-order-swaps': 'pickOrder',
+  'position-swaps': 'position',
+  trades: 'champion',
+};
+/** Swap ids are `base + teammate cellId`, one per (kind, teammate) like the real client. */
+const SWAP_ID_BASE: Record<SwapKind, number> = { pickOrder: 100, position: 200, champion: 300 };
+const SWAP_FIELDS = { pickOrder: 'pickOrderSwaps', position: 'positionSwaps', champion: 'trades' } as const;
+
+interface PendingSwap {
+  kind: SwapKind;
+  from: number;
+  to: number;
 }
 
 export class MockLeagueClient {
@@ -38,6 +58,7 @@ export class MockLeagueClient {
   private phaseEndsAt = 0;
   private groupIndex = -1;
   private localTimeout: NodeJS.Timeout | null = null;
+  private pendingSwap: PendingSwap | null = null;
   private ownedChampions = new Set<number>();
   readonly server: http.Server;
   readonly password = 'mock-password';
@@ -222,6 +243,7 @@ export class MockLeagueClient {
       timer: { phase: 'PLANNING', adjustedTimeLeftInPhase: 0, totalTimeInPhase: 0, internalNowInEpoch: 0 },
     };
     this.groupIndex = -1;
+    this.pendingSwap = null;
     this.setPhase('ChampSelect');
     this.setTimer('PLANNING', 15000);
     this.publish('/lol-champ-select/v1/session', 'Create', this.publicSession());
@@ -238,6 +260,9 @@ export class MockLeagueClient {
       }, 1500 + Math.random() * 8000);
     }
     void this.later(() => this.nextGroup(), 15000);
+
+    // A teammate asks to swap roles during planning.
+    void this.later(() => this.botRequestSwap('position'), 4000);
   }
 
   private setTimer(phase: string, ms: number) {
@@ -254,6 +279,9 @@ export class MockLeagueClient {
 
   private update() {
     if (!this.session) return;
+    // Pending swaps that are no longer possible (e.g. a pick turn started) are dropped.
+    const p = this.pendingSwap;
+    if (p && !this.swapAvailable(p.kind, p.from, p.to)) this.pendingSwap = null;
     this.session.timer.adjustedTimeLeftInPhase = Math.max(0, this.phaseEndsAt - Date.now());
     this.session.timer.internalNowInEpoch = Date.now();
     this.publish('/lol-champ-select/v1/session', 'Update', this.publicSession());
@@ -272,7 +300,129 @@ export class MockLeagueClient {
       const pick = s.actions.flat().find((a) => a.actorCellId === m.cellId && a.type === 'pick');
       m.championId = pick?.completed ? pick.championId : 0;
     }
+    const local = s.localPlayerCellId;
+    for (const kind of Object.keys(SWAP_FIELDS) as SwapKind[]) {
+      s[SWAP_FIELDS[kind]] = s.myTeam
+        .filter((m) => m.cellId !== local)
+        .map((m) => ({ id: SWAP_ID_BASE[kind] + m.cellId, cellId: m.cellId, state: this.swapState(kind, m.cellId) }));
+    }
     return s;
+  }
+
+  /* ------------------------------ swaps ------------------------------- */
+
+  private member(cellId: number) {
+    return this.session?.myTeam.find((m) => m.cellId === cellId);
+  }
+
+  private picksOf(cellId: number) {
+    return (this.session?.actions.flat() ?? []).filter((a) => a.type === 'pick' && a.actorCellId === cellId);
+  }
+
+  /** Mirrors the real client's rules for when each swap is offered. */
+  private swapAvailable(kind: SwapKind, a: number, b: number): boolean {
+    const session = this.session;
+    const ma = this.member(a);
+    const mb = this.member(b);
+    if (!session || !ma || !mb || a === b) return false;
+    const phase = session.timer.phase;
+    if (kind === 'position') return phase === 'PLANNING' && ma.assignedPosition !== mb.assignedPosition;
+    const pa = this.picksOf(a)[0];
+    const pb = this.picksOf(b)[0];
+    if (!pa || !pb) return false;
+    if (kind === 'pickOrder') {
+      return (phase === 'PLANNING' || phase === 'BAN_PICK') && [pa, pb].every((x) => !x.completed && !x.isInProgress);
+    }
+    return (
+      (phase === 'BAN_PICK' || phase === 'FINALIZATION') && pa.completed && pb.completed && pa.championId !== pb.championId
+    );
+  }
+
+  private swapState(kind: SwapKind, cell: number): string {
+    const local = this.session!.localPlayerCellId;
+    const p = this.pendingSwap;
+    if (p) {
+      if (p.kind === kind && p.from === local && p.to === cell) return 'SENT';
+      if (p.kind === kind && p.from === cell && p.to === local) return 'RECEIVED';
+      return 'BUSY';
+    }
+    return this.swapAvailable(kind, local, cell) ? 'AVAILABLE' : 'INVALID';
+  }
+
+  private applySwap(kind: SwapKind, a: number, b: number) {
+    const ma = this.member(a)!;
+    const mb = this.member(b)!;
+    if (kind === 'position') {
+      [ma.assignedPosition, mb.assignedPosition] = [mb.assignedPosition, ma.assignedPosition];
+    } else if (kind === 'pickOrder') {
+      // Exchange turns; each player keeps their hover, so the champions move with them.
+      const pa = this.picksOf(a).find((x) => !x.completed)!;
+      const pb = this.picksOf(b).find((x) => !x.completed)!;
+      [pa.actorCellId, pb.actorCellId] = [b, a];
+      [pa.championId, pb.championId] = [pb.championId, pa.championId];
+    } else {
+      const pa = this.picksOf(a).find((x) => x.completed)!;
+      const pb = this.picksOf(b).find((x) => x.completed)!;
+      [pa.championId, pb.championId] = [pb.championId, pa.championId];
+      [ma.championId, mb.championId] = [mb.championId, ma.championId];
+    }
+  }
+
+  /** A random teammate asks the local player for a swap; withdrawn if ignored. */
+  private botRequestSwap(kind: SwapKind) {
+    const session = this.session;
+    if (!session || this.opts.botSwapRequests === false || this.pendingSwap) return;
+    const local = session.localPlayerCellId;
+    const candidates = session.myTeam.filter((m) => m.cellId !== local && this.swapAvailable(kind, m.cellId, local));
+    if (!candidates.length) return;
+    const from = candidates[Math.floor(Math.random() * candidates.length)].cellId;
+    const pending: PendingSwap = { kind, from, to: local };
+    this.pendingSwap = pending;
+    this.update();
+    void this.later(() => {
+      if (this.pendingSwap === pending) {
+        this.pendingSwap = null;
+        this.update();
+      }
+    }, 12000);
+  }
+
+  private handleSwap(kind: SwapKind, id: number, op: string) {
+    const session = this.session;
+    if (!session) throw new HttpError(404, 'No active delegate');
+    const cell = id - SWAP_ID_BASE[kind];
+    const local = session.localPlayerCellId;
+    if (cell === local || !this.member(cell)) throw new HttpError(404, `Swap ${id} not found`);
+    const p = this.pendingSwap;
+
+    switch (op) {
+      case 'request': {
+        if (p) throw new HttpError(400, 'Another swap is already in progress');
+        if (!this.swapAvailable(kind, local, cell)) throw new HttpError(400, 'Swap is not available');
+        const pending: PendingSwap = { kind, from: local, to: cell };
+        this.pendingSwap = pending;
+        void this.later(() => {
+          if (this.pendingSwap !== pending) return;
+          this.pendingSwap = null;
+          if (Math.random() < (this.opts.botAcceptRate ?? 0.75)) this.applySwap(kind, local, cell);
+          this.update();
+        }, 1500 + Math.random() * 1500);
+        break;
+      }
+      case 'accept':
+      case 'decline':
+        if (!p || p.kind !== kind || p.from !== cell || p.to !== local) throw new HttpError(400, 'No such request');
+        this.pendingSwap = null;
+        if (op === 'accept') this.applySwap(kind, cell, local);
+        break;
+      case 'cancel':
+        if (!p || p.kind !== kind || p.from !== local || p.to !== cell) throw new HttpError(400, 'No such request');
+        this.pendingSwap = null;
+        break;
+      default:
+        throw new HttpError(404, `Unknown swap operation ${op}`);
+    }
+    this.update();
   }
 
   private unavailable(): Set<number> {
@@ -310,6 +460,7 @@ export class MockLeagueClient {
     if (!group) {
       this.setTimer('FINALIZATION', 20000);
       this.update();
+      void this.later(() => this.botRequestSwap('champion'), 3000);
       void this.later(() => {
         this.setTimer('GAME_STARTING', 3000);
         this.update();
@@ -380,6 +531,7 @@ export class MockLeagueClient {
 
   private startGame() {
     this.session = null;
+    this.pendingSwap = null;
     this.publish('/lol-champ-select/v1/session', 'Delete', null);
     this.setPhase('InProgress');
     void this.later(() => this.setPhase('EndOfGame'), 15000)
@@ -436,6 +588,12 @@ export class MockLeagueClient {
       if (req.method === 'GET' && icon) {
         res.writeHead(200, { 'Content-Type': 'image/png' });
         res.end(await this.icon(Number(icon[1])));
+        return;
+      }
+      const swap = /^\/lol-champ-select\/v1\/session\/(trades|pick-order-swaps|position-swaps)\/(\d+)\/(\w+)$/.exec(path);
+      if (req.method === 'POST' && swap) {
+        this.handleSwap(SWAP_ROUTES[swap[1]], Number(swap[2]), swap[3]);
+        res.writeHead(204).end();
         return;
       }
       const action = /^\/lol-champ-select\/v1\/session\/actions\/(\d+)$/.exec(path);

@@ -115,6 +115,9 @@ export function startServer(bridge: Bridge, opts: { port: number; host: string; 
           case 'lock':
             await bridge.lock(Number(msg.championId));
             break;
+          case 'swap':
+            await bridge.swap(msg.kind, Number(msg.swapId), msg.op);
+            break;
           case 'acceptReadyCheck':
             await bridge.acceptReadyCheck();
             break;

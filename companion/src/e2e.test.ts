@@ -10,7 +10,7 @@ import { startServer } from './server.js';
 import type { AppState, ServerMessage } from './protocol.js';
 
 test('phone can follow a full draft and lock in through the companion', { timeout: 60_000 }, async () => {
-  const mock = new MockLeagueClient({ speed: 10, champSelectOnly: true });
+  const mock = new MockLeagueClient({ speed: 10, champSelectOnly: true, botSwapRequests: false });
   const lcuPort = await mock.listen();
   const dir = await mkdtemp(path.join(os.tmpdir(), 'lolcs-test-'));
   const lockfile = path.join(dir, 'lockfile');

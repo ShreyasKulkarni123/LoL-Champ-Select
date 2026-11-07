@@ -2,9 +2,16 @@ import { EventEmitter } from 'node:events';
 import { LcuClient, type LcuEvent } from './lcu.js';
 import { findCredentials } from './lockfile.js';
 import { buildChampSelectView, type LcuSession } from './champSelect.js';
-import type { AppState, ChampionInfo, ReadyCheckView } from './protocol.js';
+import type { AppState, ChampionInfo, ReadyCheckView, SwapKind, SwapOperation } from './protocol.js';
 
 const READY_CHECK_DURATION_S = 12;
+
+const SWAP_PATHS: Record<SwapKind, { route: string; field: 'trades' | 'pickOrderSwaps' | 'positionSwaps' }> = {
+  pickOrder: { route: 'pick-order-swaps', field: 'pickOrderSwaps' },
+  position: { route: 'position-swaps', field: 'positionSwaps' },
+  champion: { route: 'trades', field: 'trades' },
+};
+const SWAP_OPS: SwapOperation[] = ['request', 'accept', 'decline', 'cancel'];
 
 interface LcuReadyCheck {
   state: string;
@@ -248,6 +255,17 @@ export class Bridge extends EventEmitter {
     const action = this.targetAction(true);
     const lcu = this.requireLcu();
     await lcu.request('PATCH', `/lol-champ-select/v1/session/actions/${action.id}`, { championId, completed: true });
+  }
+
+  /** Requests, accepts, declines or cancels a pick order / role / champion swap with a teammate. */
+  async swap(kind: SwapKind, swapId: number, op: SwapOperation) {
+    const paths = SWAP_PATHS[kind];
+    if (!paths) throw new Error(`Unknown swap kind ${kind}`);
+    if (!SWAP_OPS.includes(op)) throw new Error(`Unknown swap operation ${op}`);
+    const session = this.requireSession();
+    const entry = (session[paths.field] ?? []).find((s) => s.id === swapId);
+    if (!entry) throw new Error('That swap is no longer available');
+    await this.requireLcu().request('POST', `/lol-champ-select/v1/session/${paths.route}/${swapId}/${op}`);
   }
 
   async acceptReadyCheck() {

@@ -26,7 +26,31 @@ export interface PlayerSlot {
   isActing: boolean;
   spell1Id: number;
   spell2Id: number;
+  /** 1-based position in this team's pick order (0 if unknown). */
+  pickOrder: number;
 }
+
+/**
+ * Kinds of swap the client supports:
+ *  - pickOrder: exchange pick turns (before either player has picked)
+ *  - position:  exchange assigned roles (ranked, usually during planning)
+ *  - champion:  exchange locked-in champions (after both have locked in)
+ */
+export type SwapKind = 'pickOrder' | 'position' | 'champion';
+
+/** Mirrors the LCU trade/swap state for the pair (local player, other cell). */
+export type SwapState = 'AVAILABLE' | 'BUSY' | 'SENT' | 'RECEIVED' | string;
+
+export interface SwapOption {
+  /** LCU swap id, used in the request/accept/decline/cancel calls. */
+  id: number;
+  kind: SwapKind;
+  /** The teammate this swap is with. */
+  cellId: number;
+  state: SwapState;
+}
+
+export type SwapOperation = 'request' | 'accept' | 'decline' | 'cancel';
 
 export type ActionType = 'pick' | 'ban';
 
@@ -61,6 +85,8 @@ export interface ChampSelectView {
   isSpectating: boolean;
   /** Type of the action(s) currently in progress, if any. */
   activeActionType: ActionType | null;
+  /** Swaps with teammates that are currently possible or pending (INVALID ones are omitted). */
+  swaps: SwapOption[];
   /** Short human-readable description of whose turn it is. */
   turnDescription: string;
 }
@@ -94,4 +120,5 @@ export type ClientMessage =
   | { type: 'lock'; requestId: string; championId: number }
   | { type: 'acceptReadyCheck'; requestId: string }
   | { type: 'declineReadyCheck'; requestId: string }
+  | { type: 'swap'; requestId: string; kind: SwapKind; swapId: number; op: SwapOperation }
   | { type: 'ping'; requestId: string };

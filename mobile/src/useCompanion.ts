@@ -10,7 +10,7 @@ export interface CommandResult {
   error?: string;
 }
 
-type Command = ClientMessage extends infer M ? (M extends { requestId: string } ? Omit<M, 'requestId'> : never) : never;
+export type Command = ClientMessage extends infer M ? (M extends { requestId: string } ? Omit<M, 'requestId'> : never) : never;
 
 const COMMAND_TIMEOUT_MS = 8000;
 

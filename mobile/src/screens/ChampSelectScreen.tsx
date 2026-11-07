@@ -13,15 +13,16 @@ import * as Haptics from 'expo-haptics';
 import type { ChampionInfo, ChampSelectView, PlayerSlot } from '../protocol';
 import type { Pairing } from '../pairing';
 import { ChampIcon } from '../components/ChampIcon';
-import { useCountdown, type CommandResult } from '../useCompanion';
-import { colors, POSITION_LABEL } from '../theme';
+import { useCountdown, type Command, type CommandResult } from '../useCompanion';
+import { colors, POSITION_LABEL, POSITION_SHORT } from '../theme';
+import { SwapBanner, SwapSheet } from '../components/Swaps';
 
 interface Props {
   pairing: Pairing;
   view: ChampSelectView;
   receivedAt: number;
   champions: ChampionInfo[];
-  send: (cmd: { type: 'hover' | 'lock'; championId: number }) => Promise<CommandResult>;
+  send: (cmd: Command) => Promise<CommandResult>;
 }
 
 const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -33,12 +34,25 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
   const [selected, setSelected] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Teammate whose swap sheet is open. */
+  const [sheetCell, setSheetCell] = useState<number | null>(null);
 
   const me = view.myTeam.find((p) => p.isLocalPlayer);
   const action = view.currentAction;
   const mode: 'ban' | 'pick' = action?.type === 'ban' ? 'ban' : 'pick';
   const lockedChampion = me?.championId ?? 0;
   const byId = useMemo(() => new Map(champions.map((c) => [c.id, c])), [champions]);
+
+  // Per teammate: is a swap possible ('available') or in flight ('pending')?
+  const swapHints = useMemo(() => {
+    const hints = new Map<number, 'available' | 'pending'>();
+    for (const s of view.swaps) {
+      if (s.state === 'SENT' || s.state === 'RECEIVED') hints.set(s.cellId, 'pending');
+      else if (s.state === 'AVAILABLE' && !hints.has(s.cellId)) hints.set(s.cellId, 'available');
+    }
+    return hints;
+  }, [view.swaps]);
+  const openSheet = useMemo(() => (cellId: number) => setSheetCell(cellId), []);
 
   // Buzz when it becomes your turn.
   const lastActionId = useRef<number | null>(null);
@@ -151,7 +165,16 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
       <View style={styles.teams}>
         <View style={styles.team}>
           {view.myTeam.map((p) => (
-            <PlayerRow key={p.cellId} pairing={pairing} player={p} byId={byId} side="ally" actingLabel={actingLabel} />
+            <PlayerRow
+              key={p.cellId}
+              pairing={pairing}
+              player={p}
+              byId={byId}
+              side="ally"
+              actingLabel={actingLabel}
+              swapHint={p.isLocalPlayer ? null : (swapHints.get(p.cellId) ?? null)}
+              onPress={p.isLocalPlayer || !swapHints.has(p.cellId) ? undefined : openSheet}
+            />
           ))}
         </View>
         <View style={styles.team}>
@@ -199,6 +222,7 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
 
       {/* Action bar */}
       <View style={styles.footer}>
+        <SwapBanner view={view} byId={byId} send={send} />
         {error && <Text style={styles.error}>{error}</Text>}
         <Pressable
           onPress={lock}
@@ -223,6 +247,15 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
           )}
         </Pressable>
       </View>
+
+      <SwapSheet
+        pairing={pairing}
+        view={view}
+        cellId={sheetCell}
+        byId={byId}
+        send={send}
+        onClose={() => setSheetCell(null)}
+      />
     </View>
   );
 }
@@ -256,25 +289,37 @@ const PlayerRow = memo(function PlayerRow({
   byId,
   side,
   actingLabel,
+  swapHint = null,
+  onPress,
 }: {
   pairing: Pairing;
   player: PlayerSlot;
   byId: Map<number, ChampionInfo>;
   side: 'ally' | 'enemy';
   actingLabel: string;
+  swapHint?: 'available' | 'pending' | null;
+  onPress?: (cellId: number) => void;
 }) {
   const shownId = player.championId || player.hoverChampionId;
   const champName = shownId ? (byId.get(shownId)?.name ?? '') : '';
   const accent = side === 'ally' ? colors.ally : colors.enemy;
   const label = player.isLocalPlayer ? 'You' : (player.name ?? (side === 'enemy' ? `Enemy ${POSITION_LABEL[player.position] || ''}` : 'Ally'));
   const enemy = side === 'enemy';
+  const role = POSITION_SHORT[player.position] ?? '';
+  const status = champName ? `${champName}${player.championId ? '' : '…'}` : player.isActing ? actingLabel : '';
+  // Allies show their role too, so role swaps are visible at a glance.
+  const sub = enemy ? status || POSITION_LABEL[player.position] || ' ' : [role, status].filter(Boolean).join(' · ') || ' ';
   return (
-    <View
-      style={[
+    <Pressable
+      onPress={onPress ? () => onPress(player.cellId) : undefined}
+      disabled={!onPress}
+      accessibilityLabel={onPress ? `Swap with ${label}` : undefined}
+      style={({ pressed }) => [
         styles.player,
         enemy && { flexDirection: 'row-reverse' },
         player.isActing && { borderColor: accent, backgroundColor: accent + '22' },
         player.isLocalPlayer && { borderColor: colors.gold },
+        pressed && { opacity: 0.7 },
       ]}
     >
       <ChampIcon
@@ -289,14 +334,15 @@ const PlayerRow = memo(function PlayerRow({
           {label}
         </Text>
         <Text style={styles.playerSub} numberOfLines={1}>
-          {champName
-            ? `${champName}${player.championId ? '' : '…'}`
-            : player.isActing
-              ? actingLabel
-              : POSITION_LABEL[player.position] || ' '}
+          {sub}
         </Text>
       </View>
-    </View>
+      {swapHint && (
+        <View style={[styles.swapBadge, swapHint === 'pending' && styles.swapBadgePending]}>
+          <Text style={[styles.swapBadgeText, swapHint === 'pending' && { color: colors.bg }]}>⇄</Text>
+        </View>
+      )}
+    </Pressable>
   );
 });
 
@@ -364,6 +410,17 @@ const styles = StyleSheet.create({
   playerText: { flex: 1, minWidth: 0 },
   playerName: { color: colors.text, fontSize: 13, fontWeight: '600' },
   playerSub: { color: colors.textDim, fontSize: 11 },
+  swapBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: colors.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swapBadgePending: { backgroundColor: colors.gold },
+  swapBadgeText: { color: colors.gold, fontSize: 12, fontWeight: '800', lineHeight: 14 },
   search: {
     marginHorizontal: 12,
     marginTop: 10,
