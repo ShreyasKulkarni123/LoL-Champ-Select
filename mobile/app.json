@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Champ Select Remote",
+    "slug": "lol-champ-select",
+    "scheme": "lolcs",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#060B14",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.lolchampselect",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Connects to the companion app on your computer to control champ select.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "package": "com.example.lolchampselect",
+      "adaptiveIcon": {
+        "backgroundColor": "#060B14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan the pairing QR code shown by the companion app on your computer.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ]
+  }
+}
