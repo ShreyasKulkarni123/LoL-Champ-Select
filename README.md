@@ -70,8 +70,18 @@ Scan the Expo QR code with **Expo Go** ([iOS](https://apps.apple.com/app/expo-go
 [Android](https://play.google.com/store/apps/details?id=host.exp.exponent)). In the app, tap **Scan QR code** and scan
 the companion's QR code, or type the host, port and code by hand. The phone needs to be on the same Wi-Fi as the PC.
 
-To install the app for real, without Expo Go, build it with EAS: `npx eas-cli@latest build -p android` (or `-p ios`).
-Change `bundleIdentifier` and `package` in `mobile/app.json` first.
+To install the app for real, without Expo Go, build it in Expo's cloud with EAS (needs a free
+[Expo account](https://expo.dev/signup)):
+
+```bash
+cd mobile
+npx eas-cli@latest build -p android --profile preview
+```
+
+The `preview` profile builds an `.apk`. When the build finishes, open the link it prints (or scan its QR code) on your
+Android phone, download the APK and install it. Android will ask you to allow installs from your browser the first
+time. For iOS, use `-p ios`; that needs an Apple Developer account. For a personal build you can leave `package` and
+`bundleIdentifier` in `mobile/app.json` as they are. Change them before publishing anywhere.
 
 ### Try it without League running
 
