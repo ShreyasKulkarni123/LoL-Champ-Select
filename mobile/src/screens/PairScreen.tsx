@@ -127,11 +127,11 @@ export function PairScreen({ initial, onPaired }: Props) {
           style={styles.input}
           value={token}
           onChangeText={setToken}
-          placeholder="6 characters, e.g. K7MQ4P"
+          placeholder="4 characters, e.g. K7MQ"
           placeholderTextColor={colors.textDim}
           autoCapitalize="characters"
           autoCorrect={false}
-          maxLength={9}
+          maxLength={6}
         />
 
         {error && <Text style={styles.error}>{error}</Text>}

@@ -13,7 +13,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 /** No 0/O, 1/I/L: easy to read off the screen and type on a phone. */
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const CODE_LENGTH = 6;
+const CODE_LENGTH = 4;
 const CODE_PATTERN = new RegExp(`^[${CODE_ALPHABET}]{${CODE_LENGTH}}$`);
 
 function newToken() {

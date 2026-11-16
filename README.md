@@ -126,7 +126,7 @@ companion to the internet.**
 
 ## Security
 
-- The companion only accepts connections that present the pairing code: 6 random characters (not case-sensitive)
+- The companion only accepts connections that present the pairing code: 4 random characters (not case-sensitive)
   stored in `~/.lol-champ-select/config.json`. After 10 wrong codes, that address is locked out for a minute, so
   the code can't be guessed. Anyone on your network who has the code can control your champ select. Use
   `--reset-token` if it leaks.
