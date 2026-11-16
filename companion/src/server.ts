@@ -2,15 +2,40 @@ import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Bridge } from './bridge.js';
+import { normalizeCode } from './config.js';
 import type { ClientMessage, ServerMessage } from './protocol.js';
 
 export const COMPANION_VERSION = '0.1.0';
 
 function tokenMatches(expected: string, given: string | null): boolean {
   if (!given) return false;
-  const a = Buffer.from(expected);
-  const b = Buffer.from(given);
+  const a = Buffer.from(normalizeCode(expected));
+  const b = Buffer.from(normalizeCode(given));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * The pairing code is short, so wrong guesses are rate limited per address:
+ * after MAX_FAILURES bad codes, that address is locked out for LOCKOUT_MS.
+ */
+const MAX_FAILURES = 10;
+const LOCKOUT_MS = 60_000;
+
+function createGuard(expected: string) {
+  const failures = new Map<string, { count: number; until: number }>();
+  return (ip: string, given: string | null): 'ok' | 'bad' | 'locked' => {
+    const now = Date.now();
+    const entry = failures.get(ip);
+    if (entry && entry.until < now) failures.delete(ip);
+    const current = failures.get(ip);
+    if (current && current.count >= MAX_FAILURES) return 'locked';
+    if (tokenMatches(expected, given)) {
+      failures.delete(ip);
+      return 'ok';
+    }
+    failures.set(ip, { count: (current?.count ?? 0) + 1, until: now + LOCKOUT_MS });
+    return 'bad';
+  };
 }
 
 function send(ws: WebSocket, msg: ServerMessage) {
@@ -26,6 +51,7 @@ function send(ws: WebSocket, msg: ServerMessage) {
  */
 export function startServer(bridge: Bridge, opts: { port: number; host: string; token: string }) {
   const iconCache = new Map<number, { type: string; body: Buffer }>();
+  const checkToken = createGuard(opts.token);
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -38,8 +64,9 @@ export function startServer(bridge: Bridge, opts: { port: number; host: string; 
       return;
     }
 
-    if (!tokenMatches(opts.token, url.searchParams.get('token'))) {
-      res.writeHead(401).end('Unauthorized');
+    const auth = checkToken(req.socket.remoteAddress ?? '', url.searchParams.get('token'));
+    if (auth !== 'ok') {
+      res.writeHead(auth === 'locked' ? 429 : 401).end(auth === 'locked' ? 'Too many attempts' : 'Unauthorized');
       return;
     }
 
@@ -84,8 +111,9 @@ export function startServer(bridge: Bridge, opts: { port: number; host: string; 
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== '/ws' || !tokenMatches(opts.token, url.searchParams.get('token'))) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    const auth = url.pathname === '/ws' ? checkToken(req.socket.remoteAddress ?? '', url.searchParams.get('token')) : 'bad';
+    if (auth !== 'ok') {
+      socket.write(auth === 'locked' ? 'HTTP/1.1 429 Too Many Requests\r\n\r\n' : 'HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
@@ -117,6 +145,12 @@ export function startServer(bridge: Bridge, opts: { port: number; host: string; 
             break;
           case 'swap':
             await bridge.swap(msg.kind, Number(msg.swapId), msg.op);
+            break;
+          case 'benchSwap':
+            await bridge.benchSwap(Number(msg.championId));
+            break;
+          case 'reroll':
+            await bridge.reroll();
             break;
           case 'acceptReadyCheck':
             await bridge.acceptReadyCheck();

@@ -76,7 +76,14 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
   const unavailable = useMemo(() => new Set(view.unavailableChampionIds), [view.unavailableChampionIds]);
   const allowedIds = mode === 'ban' ? view.bannableChampionIds : view.pickableChampionIds;
 
+  // ARAM: first choose one of your champion cards, then you can swap with the shared bench.
+  const cardMode = view.choiceChampionIds.length > 0 && !lockedChampion;
+  const benchMode = view.benchEnabled && !cardMode;
+
   const grid = useMemo(() => {
+    const champ = (id: number): ChampionInfo => byId.get(id) ?? { id, name: `#${id}`, alias: '' };
+    if (cardMode) return view.choiceChampionIds.map(champ);
+    if (benchMode) return view.benchChampionIds.map(champ);
     const allowed = new Set(allowedIds);
     const q = normalize(query);
     return champions.filter(
@@ -85,12 +92,26 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
         !unavailable.has(c.id) &&
         (!q || normalize(c.name).includes(q) || normalize(c.alias).includes(q)),
     );
-  }, [champions, allowedIds, unavailable, query]);
+  }, [champions, byId, allowedIds, unavailable, query, cardMode, benchMode, view.choiceChampionIds, view.benchChampionIds]);
 
   const canHover = !lockedChampion && (action !== null || view.nextPickAction !== null) && !view.isSpectating;
   const selectionValid = selected !== null && !unavailable.has(selected);
+  const benchSelection = benchMode && selected !== null && view.benchChampionIds.includes(selected);
+
+  // Don't keep a bench selection that someone else just took.
+  useEffect(() => {
+    if (benchMode && selected !== null && !view.benchChampionIds.includes(selected)) setSelected(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [benchMode, view.benchChampionIds]);
 
   const choose = async (championId: number) => {
+    if (benchMode) {
+      if (view.isSpectating) return;
+      setSelected(championId);
+      setError(null);
+      void Haptics.selectionAsync().catch(() => {});
+      return;
+    }
     if (!canHover) return;
     setSelected(championId);
     setError(null);
@@ -109,8 +130,27 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
     else setError(r.error ?? 'Could not lock in');
   };
 
-  const columns = Math.max(4, Math.floor((width - 24) / 62));
-  const tile = Math.floor((width - 24) / columns);
+  const takeFromBench = async () => {
+    if (!benchSelection || selected === null) return;
+    setBusy(true);
+    setError(null);
+    const r = await send({ type: 'benchSwap', championId: selected });
+    setBusy(false);
+    if (r.ok) {
+      setSelected(null);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } else setError(r.error ?? 'Could not swap with the bench');
+  };
+
+  const reroll = async () => {
+    setError(null);
+    const r = await send({ type: 'reroll' });
+    if (!r.ok) setError(r.error ?? 'Could not reroll');
+  };
+
+  const columns = cardMode ? 3 : Math.max(4, Math.floor((width - 24) / 62));
+  const tile = Math.min(cardMode ? 120 : 999, Math.floor((width - 24) / columns));
+  const showBans = view.myTeamBans.length + view.theirTeamBans.length > 0 || !(view.benchEnabled || cardMode);
   const myTurn = action !== null;
   // 10 ban slots + label must fit on one row, even on small phones.
   const banSize = Math.min(28, Math.floor((width - 24 - 44) / 10) - 3);
@@ -121,7 +161,18 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
   let buttonLabel: string;
   let buttonEnabled = false;
   if (view.isSpectating) buttonLabel = 'Spectating';
-  else if (action) {
+  else if (benchMode) {
+    buttonEnabled = benchSelection && !busy;
+    buttonLabel = benchSelection
+      ? `SWAP TO ${selectedName.toUpperCase()}`
+      : view.benchChampionIds.length
+        ? 'Tap a bench champion to swap to it'
+        : lockedChampion
+          ? `You have ${byId.get(lockedChampion)?.name ?? 'your champion'}`
+          : 'Waiting…';
+  } else if (cardMode && !action) {
+    buttonLabel = 'Waiting for card selection…';
+  } else if (action) {
     buttonEnabled = selectionValid && !busy;
     buttonLabel = selected
       ? `${mode === 'ban' ? 'BAN' : 'LOCK IN'} ${selectedName.toUpperCase()}`
@@ -154,12 +205,14 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
         </View>
       </View>
 
-      {/* Bans */}
-      <View style={styles.bans}>
-        <BanRow pairing={pairing} bans={view.myTeamBans} color={colors.ally} size={banSize} />
-        <Text style={styles.bansLabel}>BANS</Text>
-        <BanRow pairing={pairing} bans={view.theirTeamBans} color={colors.enemy} size={banSize} alignEnd />
-      </View>
+      {/* Bans (hidden in modes without bans, like ARAM) */}
+      {showBans && (
+        <View style={styles.bans}>
+          <BanRow pairing={pairing} bans={view.myTeamBans} color={colors.ally} size={banSize} />
+          <Text style={styles.bansLabel}>BANS</Text>
+          <BanRow pairing={pairing} bans={view.theirTeamBans} color={colors.enemy} size={banSize} alignEnd />
+        </View>
+      )}
 
       {/* Teams */}
       <View style={styles.teams}>
@@ -184,20 +237,37 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
         </View>
       </View>
 
-      {/* Champion picker */}
-      <TextInput
-        style={styles.search}
-        value={query}
-        onChangeText={setQuery}
-        placeholder={`Search ${grid.length} ${mode === 'ban' ? 'bannable' : 'unlocked'} champions`}
-        placeholderTextColor={colors.textDim}
-        autoCorrect={false}
-        autoCapitalize="none"
-        clearButtonMode="while-editing"
-      />
+      {/* Champion picker: champion cards, the ARAM bench, or your searchable champion pool */}
+      {cardMode || benchMode ? (
+        <View style={styles.sectionRow}>
+          <Text style={styles.sectionLabel}>
+            {cardMode
+              ? 'CHOOSE ONE OF YOUR CHAMPION CARDS'
+              : `BENCH · ${view.benchChampionIds.length} ${view.benchChampionIds.length === 1 ? 'CHAMPION' : 'CHAMPIONS'}`}
+          </Text>
+          {view.allowRerolling && !view.isSpectating && (
+            <Pressable onPress={reroll} disabled={view.rerollsRemaining <= 0} hitSlop={8}>
+              <Text style={[styles.reroll, view.rerollsRemaining <= 0 && { color: colors.textDim }]}>
+                Reroll ({view.rerollsRemaining})
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      ) : (
+        <TextInput
+          style={styles.search}
+          value={query}
+          onChangeText={setQuery}
+          placeholder={`Search ${grid.length} ${mode === 'ban' ? 'bannable' : 'unlocked'} champions`}
+          placeholderTextColor={colors.textDim}
+          autoCorrect={false}
+          autoCapitalize="none"
+          clearButtonMode="while-editing"
+        />
+      )}
       <FlatList
         key={columns}
-        style={[styles.grid, !canHover && !action && { opacity: 0.45 }]}
+        style={[styles.grid, !benchMode && !canHover && !action && { opacity: 0.45 }]}
         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12 }}
         data={grid}
         numColumns={columns}
@@ -210,13 +280,15 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
             champion={item}
             size={tile}
             selected={item.id === selected}
-            disabled={!canHover}
-            ban={mode === 'ban'}
+            disabled={benchMode ? view.isSpectating : !canHover}
+            ban={mode === 'ban' && !benchMode}
             onPress={choose}
           />
         )}
         ListEmptyComponent={
-          <Text style={styles.empty}>{champions.length === 0 ? 'Loading champions…' : 'No champions match'}</Text>
+          <Text style={styles.empty}>
+            {benchMode ? 'The bench is empty' : champions.length === 0 ? 'Loading champions…' : 'No champions match'}
+          </Text>
         }
       />
 
@@ -225,7 +297,7 @@ export function ChampSelectScreen({ pairing, view, receivedAt, champions, send }
         <SwapBanner view={view} byId={byId} send={send} />
         {error && <Text style={styles.error}>{error}</Text>}
         <Pressable
-          onPress={lock}
+          onPress={benchMode ? takeFromBench : lock}
           disabled={!buttonEnabled}
           style={({ pressed }) => [
             styles.lockButton,
@@ -421,6 +493,16 @@ const styles = StyleSheet.create({
   },
   swapBadgePending: { backgroundColor: colors.gold },
   swapBadgeText: { color: colors.gold, fontSize: 12, fontWeight: '800', lineHeight: 14 },
+  sectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  sectionLabel: { color: colors.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 1 },
+  reroll: { color: colors.gold, fontSize: 14, fontWeight: '700' },
   search: {
     marginHorizontal: 12,
     marginTop: 10,

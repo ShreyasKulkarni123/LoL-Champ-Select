@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,8 +11,20 @@ export interface CompanionConfig {
 const CONFIG_DIR = process.env.LOLCS_CONFIG_DIR ?? path.join(os.homedir(), '.lol-champ-select');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
+/** No 0/O, 1/I/L: easy to read off the screen and type on a phone. */
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const CODE_LENGTH = 6;
+const CODE_PATTERN = new RegExp(`^[${CODE_ALPHABET}]{${CODE_LENGTH}}$`);
+
 function newToken() {
-  return randomBytes(18).toString('base64url');
+  let code = '';
+  for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  return code;
+}
+
+/** Pairing codes are case-insensitive and may be typed with spaces or dashes. */
+export function normalizeCode(code: string): string {
+  return code.toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
 /** Loads (or creates) the persisted pairing token so the phone only needs to pair once. */
@@ -24,7 +36,8 @@ export async function loadConfig(opts: { resetToken?: boolean } = {}): Promise<C
     /* first run */
   }
   const full: CompanionConfig = {
-    token: !opts.resetToken && cfg.token ? cfg.token : newToken(),
+    // Older versions used a long code; replace it with a short one.
+    token: !opts.resetToken && cfg.token && CODE_PATTERN.test(cfg.token) ? cfg.token : newToken(),
     port: cfg.port ?? 8787,
   };
   if (full.token !== cfg.token || full.port !== cfg.port) {

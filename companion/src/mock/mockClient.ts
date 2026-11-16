@@ -22,6 +22,8 @@ interface MockOptions {
   speed?: number;
   /** Stay in champ select forever (no ready check, no game). Useful for UI work. */
   champSelectOnly?: boolean;
+  /** 'draft' (ranked-style, default) or 'aram' (champion cards + shared bench, no bans). */
+  mode?: 'draft' | 'aram';
   /** Probability a bot teammate accepts your swap request (default 0.75). */
   botAcceptRate?: number;
   /** Whether bot teammates send you swap requests themselves (default true). */
@@ -32,7 +34,7 @@ type SwapKind = 'pickOrder' | 'position' | 'champion';
 const SWAP_ROUTES: Record<string, SwapKind> = {
   'pick-order-swaps': 'pickOrder',
   'position-swaps': 'position',
-  trades: 'champion',
+  'champion-swaps': 'champion',
 };
 /** Swap ids are `base + teammate cellId`, one per (kind, teammate) like the real client. */
 const SWAP_ID_BASE: Record<SwapKind, number> = { pickOrder: 100, position: 200, champion: 300 };
@@ -59,6 +61,10 @@ export class MockLeagueClient {
   private groupIndex = -1;
   private localTimeout: NodeJS.Timeout | null = null;
   private pendingSwap: PendingSwap | null = null;
+  /** ARAM: the champion cards each player was dealt. */
+  private cards = new Map<number, number[]>();
+  /** ARAM: the local team's shared bench. */
+  private bench: number[] = [];
   private ownedChampions = new Set<number>();
   readonly server: http.Server;
   readonly password = 'mock-password';
@@ -195,8 +201,14 @@ export class MockLeagueClient {
 
   /* --------------------------- champ select --------------------------- */
 
+  private get aram() {
+    return this.opts.mode === 'aram';
+  }
+
   private startChampSelect() {
     const localCell = Math.floor(Math.random() * 5);
+    this.cards.clear();
+    this.bench = [];
     const member = (cellId: number): LcuMember => {
       const ally = cellId < 5;
       return {
@@ -207,7 +219,7 @@ export class MockLeagueClient {
         puuid: ally ? `mock-puuid-${cellId}` : '',
         gameName: ally ? (cellId === localCell ? 'You (Mock)' : ALLY_NAMES[cellId]) : '',
         tagLine: ally ? 'MOCK' : '',
-        assignedPosition: POSITIONS[cellId % 5],
+        assignedPosition: this.aram ? '' : POSITIONS[cellId % 5],
         spell1Id: 4,
         spell2Id: cellId % 5 === 1 ? 11 : 14,
         team: ally ? 1 : 2,
@@ -223,6 +235,40 @@ export class MockLeagueClient {
       isInProgress: false,
       type,
     });
+    if (this.aram) {
+      // Everyone picks one of their cards at the same time; there are no bans.
+      const dealt = new Set<number>();
+      for (let cell = 0; cell < 10; cell++) {
+        const hand: number[] = [];
+        while (hand.length < 2) {
+          const c = this.champions[Math.floor(Math.random() * this.champions.length)].id;
+          if (!dealt.has(c)) {
+            dealt.add(c);
+            hand.push(c);
+          }
+        }
+        this.cards.set(cell, hand);
+      }
+      this.session = {
+        localPlayerCellId: localCell,
+        isSpectating: false,
+        myTeam: [0, 1, 2, 3, 4].map(member),
+        theirTeam: [5, 6, 7, 8, 9].map(member),
+        actions: [Array.from({ length: 10 }, (_, i) => act(i, 'pick'))],
+        bans: { myTeamBans: [], theirTeamBans: [] },
+        benchEnabled: true,
+        benchChampions: [],
+        allowSubsetChampionPicks: true,
+        allowRerolling: false,
+        rerollsRemaining: 0,
+        timer: { phase: 'BAN_PICK', adjustedTimeLeftInPhase: 0, totalTimeInPhase: 0, internalNowInEpochMs: 0 },
+      };
+      this.groupIndex = -1;
+      this.pendingSwap = null;
+      this.setPhase('ChampSelect');
+      this.nextGroup();
+      return;
+    }
     const actions: LcuAction[][] = [
       Array.from({ length: 10 }, (_, i) => act(i, 'ban')),
       [act(-1, 'ten_bans_reveal')],
@@ -240,7 +286,7 @@ export class MockLeagueClient {
       theirTeam: [5, 6, 7, 8, 9].map(member),
       actions,
       bans: { myTeamBans: [], theirTeamBans: [] },
-      timer: { phase: 'PLANNING', adjustedTimeLeftInPhase: 0, totalTimeInPhase: 0, internalNowInEpoch: 0 },
+      timer: { phase: 'PLANNING', adjustedTimeLeftInPhase: 0, totalTimeInPhase: 0, internalNowInEpochMs: 0 },
     };
     this.groupIndex = -1;
     this.pendingSwap = null;
@@ -272,7 +318,7 @@ export class MockLeagueClient {
       phase,
       adjustedTimeLeftInPhase: ms / this.speed,
       totalTimeInPhase: ms / this.speed,
-      internalNowInEpoch: Date.now(),
+      internalNowInEpochMs: Date.now(),
       isInfinite: false,
     };
   }
@@ -283,7 +329,7 @@ export class MockLeagueClient {
     const p = this.pendingSwap;
     if (p && !this.swapAvailable(p.kind, p.from, p.to)) this.pendingSwap = null;
     this.session.timer.adjustedTimeLeftInPhase = Math.max(0, this.phaseEndsAt - Date.now());
-    this.session.timer.internalNowInEpoch = Date.now();
+    this.session.timer.internalNowInEpochMs = Date.now();
     this.publish('/lol-champ-select/v1/session', 'Update', this.publicSession());
   }
 
@@ -469,7 +515,7 @@ export class MockLeagueClient {
     }
 
     const isReveal = group[0].type === 'ten_bans_reveal';
-    const duration = isReveal ? 3000 : 30000;
+    const duration = isReveal ? 3000 : this.aram ? 12000 : 30000;
     this.setTimer('BAN_PICK', duration);
     for (const a of group) a.isInProgress = true;
     this.update();
@@ -484,7 +530,8 @@ export class MockLeagueClient {
       const ally = a.isAllyAction;
       // Allies who declared an intent usually stick with it.
       const intent = a.type === 'pick' && a.championId && !this.unavailable().has(a.championId) ? a.championId : 0;
-      const choice = intent || this.randomChampion();
+      const hand = this.cards.get(a.actorCellId);
+      const choice = hand ? hand[Math.floor(Math.random() * hand.length)] : intent || this.randomChampion();
       void this.later(() => {
         if (a.completed) return;
         a.championId = choice; // hover (only visible for allies)
@@ -492,7 +539,7 @@ export class MockLeagueClient {
         this.update();
       }, 1000 + Math.random() * 3000);
       void this.later(() => {
-        if (!a.completed) this.completeAction(a, this.unavailable().has(choice) ? this.randomChampion() : choice);
+        if (!a.completed) this.completeAction(a, hand || !this.unavailable().has(choice) ? choice : this.randomChampion());
       }, 4500 + Math.random() * 4000);
     }
 
@@ -501,7 +548,8 @@ export class MockLeagueClient {
     if (local) {
       this.localTimeout = setTimeout(() => {
         this.localTimeout = null;
-        if (!local.completed) this.completeAction(local, local.championId || (local.type === 'ban' ? 0 : this.randomChampion()));
+        const fallback = this.cards.get(local.actorCellId)?.[0] ?? (local.type === 'ban' ? 0 : this.randomChampion());
+        if (!local.completed) this.completeAction(local, local.championId || fallback);
       }, duration / this.speed);
     }
   }
@@ -515,6 +563,11 @@ export class MockLeagueClient {
     if (a.type === 'pick') {
       const m = [...session.myTeam, ...session.theirTeam].find((x) => x.cellId === a.actorCellId);
       if (m) m.championId = championId;
+      const hand = this.cards.get(a.actorCellId);
+      if (hand && a.isAllyAction) {
+        for (const c of hand) if (c !== championId) this.bench.push(c);
+        session.benchChampions = this.bench.map((championId) => ({ championId, isPriority: false }));
+      }
     }
     if (a.type === 'ban' || a.type === 'ten_bans_reveal') {
       const bans = session.actions[0].filter((b) => b.completed && b.championId > 0);
@@ -540,6 +593,20 @@ export class MockLeagueClient {
       .then(() => this.queue());
   }
 
+  /** ARAM: the local player trades their champion for one on the bench. */
+  private benchSwap(championId: number) {
+    const session = this.session;
+    if (!session?.benchEnabled) throw new HttpError(400, 'Bench is not enabled');
+    const me = session.myTeam.find((m) => m.cellId === session.localPlayerCellId)!;
+    if (!me.championId) throw new HttpError(400, 'Pick a champion card first');
+    const i = this.bench.indexOf(championId);
+    if (i < 0) throw new HttpError(400, 'Champion is not on the bench');
+    this.bench[i] = me.championId;
+    me.championId = championId;
+    session.benchChampions = this.bench.map((id) => ({ championId: id, isPriority: false }));
+    this.update();
+  }
+
   /** Handles PATCH /lol-champ-select/v1/session/actions/:id from the companion. */
   private patchAction(id: number, body: { championId?: number; completed?: boolean }) {
     const session = this.session;
@@ -550,7 +617,8 @@ export class MockLeagueClient {
     if (a.completed) throw new HttpError(400, 'Action already completed');
     const championId = body.championId ?? a.championId;
     if (championId) {
-      const allowed = a.type === 'ban' ? this.bannable() : this.pickable();
+      const hand = this.cards.get(a.actorCellId);
+      const allowed = a.type === 'ban' ? this.bannable() : (hand ?? this.pickable());
       if (!allowed.includes(championId)) throw new HttpError(400, 'Champion is not available');
     }
     if (body.completed) {
@@ -590,9 +658,15 @@ export class MockLeagueClient {
         res.end(await this.icon(Number(icon[1])));
         return;
       }
-      const swap = /^\/lol-champ-select\/v1\/session\/(trades|pick-order-swaps|position-swaps)\/(\d+)\/(\w+)$/.exec(path);
+      const swap = /^\/lol-champ-select\/v1\/session\/(champion-swaps|pick-order-swaps|position-swaps)\/(\d+)\/(\w+)$/.exec(path);
       if (req.method === 'POST' && swap) {
         this.handleSwap(SWAP_ROUTES[swap[1]], Number(swap[2]), swap[3]);
+        res.writeHead(204).end();
+        return;
+      }
+      const bench = /^\/lol-champ-select\/v1\/session\/bench\/swap\/(\d+)$/.exec(path);
+      if (req.method === 'POST' && bench) {
+        this.benchSwap(Number(bench[1]));
         res.writeHead(204).end();
         return;
       }
@@ -628,9 +702,11 @@ export class MockLeagueClient {
         case 'GET /lol-champ-select/v1/session': {
           if (!this.session) throw new HttpError(404, 'No active delegate');
           this.session.timer.adjustedTimeLeftInPhase = Math.max(0, this.phaseEndsAt - Date.now());
-          this.session.timer.internalNowInEpoch = Date.now();
+          this.session.timer.internalNowInEpochMs = Date.now();
           return json(200, this.publicSession());
         }
+        case 'GET /lol-lobby-team-builder/champ-select/v1/subset-champion-list':
+          return json(200, this.session ? (this.cards.get(this.session.localPlayerCellId) ?? []) : []);
         case 'GET /lol-champ-select/v1/pickable-champion-ids':
           if (!this.session) throw new HttpError(404, 'No active delegate');
           return json(200, this.pickable());

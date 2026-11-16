@@ -43,7 +43,10 @@ export const baseUrl = (p: Pairing) => `http://${p.host}:${p.port}`;
 export const iconUrl = (p: Pairing, championId: number) =>
   `${baseUrl(p)}/icon/${championId}?token=${encodeURIComponent(p.token)}`;
 
-export type CheckResult = 'ok' | 'bad-token' | 'unreachable';
+/** Pairing codes are case-insensitive and may be typed with spaces or dashes. */
+export const normalizeCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+export type CheckResult = 'ok' | 'bad-token' | 'locked' | 'unreachable';
 
 /** Verifies that the companion is reachable and the pairing code is right. */
 export async function checkPairing(p: Pairing): Promise<CheckResult> {
@@ -54,6 +57,7 @@ export async function checkPairing(p: Pairing): Promise<CheckResult> {
       signal: controller.signal,
     });
     if (res.status === 401) return 'bad-token';
+    if (res.status === 429) return 'locked';
     return res.ok ? 'ok' : 'unreachable';
   } catch {
     return 'unreachable';

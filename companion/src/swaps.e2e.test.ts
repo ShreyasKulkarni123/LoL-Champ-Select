@@ -43,13 +43,19 @@ async function harness(mockOpts: ConstructorParameters<typeof MockLeagueClient>[
       results.set(requestId, resolve);
       ws.send(JSON.stringify({ type: 'swap', kind, swapId, op, requestId }));
     });
+  const call = (msg: object) =>
+    new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      const requestId = String(++n);
+      results.set(requestId, resolve);
+      ws.send(JSON.stringify({ ...msg, requestId }));
+    });
   const close = () => {
     ws.close();
     bridge.stop();
     server.close();
     mock.close();
   };
-  return { until, swap, close };
+  return { until, swap, call, close };
 }
 
 const me = (v: ChampSelectView) => v.myTeam.find((p) => p.isLocalPlayer)!;
@@ -106,6 +112,41 @@ test('accept a swap request sent by a teammate', { timeout: 30_000 }, async () =
     assert.equal((await h.swap('position', incoming.id, 'accept')).ok, true);
     const after = await h.until((x) => me(x).position === theirRole);
     assert.ok(after.swaps.every((s) => s.state !== 'RECEIVED'));
+  } finally {
+    h.close();
+  }
+});
+
+test('ARAM: choose a champion card, swap with the bench, trade with a teammate', { timeout: 60_000 }, async () => {
+  const h = await harness({ speed: 4, mode: 'aram', botSwapRequests: false, botAcceptRate: 1 });
+  try {
+    // Your two cards are offered; bans are absent.
+    let v = await h.until((x) => x.choiceChampionIds.length === 2 && x.currentAction?.type === 'pick');
+    assert.equal(v.benchEnabled, true);
+    assert.deepEqual([...v.myTeamBans, ...v.theirTeamBans], []);
+    const [, second] = v.choiceChampionIds;
+
+    // Only your cards can be locked.
+    const notACard = v.pickableChampionIds.find((id) => !v.choiceChampionIds.includes(id))!;
+    assert.equal((await h.call({ type: 'lock', championId: notACard })).ok, false);
+    assert.equal((await h.call({ type: 'lock', championId: second })).ok, true);
+    v = await h.until((x) => me(x).championId === second);
+
+    // Once allies have picked, their other cards are on the bench; take one.
+    v = await h.until((x) => x.benchChampionIds.length >= 2);
+    const fromBench = v.benchChampionIds[0];
+    assert.equal((await h.call({ type: 'benchSwap', championId: fromBench })).ok, true);
+    v = await h.until((x) => me(x).championId === fromBench);
+    assert.ok(v.benchChampionIds.includes(second), 'your old champion goes back to the bench');
+
+    // Champion trades go through the champion-swaps endpoint.
+    v = await h.until((x) => !!available(x, 'champion'));
+    const trade = available(v, 'champion')!;
+    const theirChamp = cell(v, trade.cellId).championId;
+    const res = await h.swap('champion', trade.id, 'request');
+    assert.equal(res.ok, true, res.error ?? '');
+    v = await h.until((x) => me(x).championId === theirChamp);
+    assert.equal(cell(v, trade.cellId).championId, fromBench);
   } finally {
     h.close();
   }

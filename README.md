@@ -6,6 +6,7 @@ Do champ select from your phone when you're away from your computer. You can:
 - see **both teams' picks**, your teammates' hovers, and **ally and enemy bans**, with the phase timer
 - browse **your unlocked champions** (owned plus free rotation), search them, **hover** one, and **lock in** or **ban**
 - **swap with teammates**: trade **roles**, **pick order** or **locked-in champions**, and accept or decline their requests
+- **ARAM**: choose one of your **champion cards**, then take champions from the shared **bench**
 
 <p>
   <img src="docs/ready-check.png" width="220" alt="Ready check screen">
@@ -93,6 +94,7 @@ during planning, and offer a champion trade during finalization:
 cd companion
 npm run dev:mock                 # mock client and companion together
 npm run dev:mock -- --speed 3    # everything 3x faster
+npm run dev:mock -- --mode aram  # ARAM: champion cards and a shared bench
 ```
 
 Pair the phone with it the same way. Your own turns wait for you, just like the real thing.
@@ -124,8 +126,9 @@ companion to the internet.**
 
 ## Security
 
-- The companion only accepts connections that present the pairing code, which is a random 144-bit token stored in
-  `~/.lol-champ-select/config.json`. Anyone on your network who has the code can control your champ select. Use
+- The companion only accepts connections that present the pairing code: 6 random characters (not case-sensitive)
+  stored in `~/.lol-champ-select/config.json`. After 10 wrong codes, that address is locked out for a minute, so
+  the code can't be guessed. Anyone on your network who has the code can control your champ select. Use
   `--reset-token` if it leaks.
 - Traffic between phone and PC is plain `ws://` on your LAN, so only use it on networks you trust (or over Tailscale,
   which encrypts it).
@@ -150,15 +153,21 @@ LCU endpoints used:
 | Champ select state | `GET /lol-champ-select/v1/session` |
 | Unlocked / bannable champions | `GET /lol-champ-select/v1/pickable-champion-ids`, `GET /lol-champ-select/v1/bannable-champion-ids` |
 | Hover / lock in / ban | `PATCH /lol-champ-select/v1/session/actions/{id}` with `{ championId }` or `{ championId, completed: true }` |
-| Swaps and trades | `POST /lol-champ-select/v1/session/{position-swaps,pick-order-swaps,trades}/{id}/{request,accept,decline,cancel}`; availability comes from the session's `positionSwaps`, `pickOrderSwaps` and `trades` arrays |
+| Swaps and trades | `POST /lol-champ-select/v1/session/{position-swaps,pick-order-swaps,champion-swaps}/{id}/{request,accept,decline,cancel}`; availability comes from the session's `positionSwaps`, `pickOrderSwaps` and `trades` arrays (champion trades are listed under `trades` but use the `champion-swaps` endpoint) |
+| ARAM champion cards | `GET /lol-lobby-team-builder/champ-select/v1/subset-champion-list` when the session has `allowSubsetChampionPicks`; the chosen card is locked through your pick action |
+| ARAM bench | Session `benchEnabled` / `benchChampions`; `POST /lol-champ-select/v1/session/bench/swap/{championId}` |
 | Ready check | `POST /lol-matchmaking/v1/ready-check/accept` and `/decline` |
 | Champion names and icons | `/lol-game-data/assets/v1/champion-summary.json`, `/lol-game-data/assets/v1/champion-icons/{id}.png` |
 | Teammate names | `GET /lol-summoner/v2/summoners/puuid/{puuid}` |
 
 ## Not included yet
 
-Ideas for later: rune page and summoner spell editing, bench swaps in ARAM, and push notifications while the app is in
-the background. For now, keep the app open (it keeps the screen awake during queue
+Ideas for later: rune page and summoner spell editing, Arena's 16-player layout, and push notifications while the app
+is in the background.
+
+Run the companion with `npm start -- --debug` to log every League Client event it receives and save the latest raw
+champ select session to `~/.lol-champ-select/debug/champ-select-session.json`. That's the quickest way to see what an
+unfamiliar game mode sends. For now, keep the app open (it keeps the screen awake during queue
 and champ select, and vibrates when it's your turn).
 
 ## Disclaimer

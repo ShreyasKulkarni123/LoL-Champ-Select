@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { checkPairing, parsePairingUrl, savePairing, type Pairing } from '../pairing';
+import { checkPairing, normalizeCode, parsePairingUrl, savePairing, type Pairing } from '../pairing';
 import { colors } from '../theme';
 
 interface Props {
@@ -38,6 +38,8 @@ export function PairScreen({ initial, onPaired }: Props) {
       onPaired(p);
     } else if (result === 'bad-token') {
       setError('Wrong pairing code. Check the code shown by the companion on your computer.');
+    } else if (result === 'locked') {
+      setError('Too many wrong codes. Wait a minute, then try again.');
     } else {
       setError(
         `Can't reach ${p.host}:${p.port}. Make sure the companion is running and your phone is on the same Wi-Fi.`,
@@ -84,7 +86,8 @@ export function PairScreen({ initial, onPaired }: Props) {
   }
 
   const portNum = Number(port);
-  const valid = host.trim().length > 0 && token.trim().length > 0 && Number.isInteger(portNum) && portNum > 0;
+  const code = normalizeCode(token);
+  const valid = host.trim().length > 0 && code.length > 0 && Number.isInteger(portNum) && portNum > 0;
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -124,10 +127,11 @@ export function PairScreen({ initial, onPaired }: Props) {
           style={styles.input}
           value={token}
           onChangeText={setToken}
-          placeholder="Shown in the companion window"
+          placeholder="6 characters, e.g. K7MQ4P"
           placeholderTextColor={colors.textDim}
-          autoCapitalize="none"
+          autoCapitalize="characters"
           autoCorrect={false}
+          maxLength={9}
         />
 
         {error && <Text style={styles.error}>{error}</Text>}
@@ -135,7 +139,7 @@ export function PairScreen({ initial, onPaired }: Props) {
         <Pressable
           style={[styles.button, styles.secondary, !valid && styles.disabled]}
           disabled={!valid || busy}
-          onPress={() => tryPair({ host: host.trim(), port: portNum, token: token.trim() })}
+          onPress={() => tryPair({ host: host.trim(), port: portNum, token: code })}
         >
           {busy ? <ActivityIndicator color={colors.gold} /> : <Text style={styles.secondaryText}>Connect</Text>}
         </Pressable>

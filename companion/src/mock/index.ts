@@ -10,6 +10,7 @@ const { values } = parseArgs({
     'with-companion': { type: 'boolean' },
     'champ-select-only': { type: 'boolean' },
     speed: { type: 'string' },
+    mode: { type: 'string' },
     port: { type: 'string' },
   },
 });
@@ -17,6 +18,7 @@ const { values } = parseArgs({
 const mock = new MockLeagueClient({
   speed: values.speed ? Number(values.speed) : 1,
   champSelectOnly: values['champ-select-only'],
+  mode: values.mode === 'aram' ? 'aram' : 'draft',
 });
 const lcuPort = await mock.listen(values.port ? Number(values.port) : 0);
 

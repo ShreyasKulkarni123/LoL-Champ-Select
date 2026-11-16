@@ -85,6 +85,13 @@ export interface ChampSelectView {
   isSpectating: boolean;
   /** Type of the action(s) currently in progress, if any. */
   activeActionType: ActionType | null;
+  /** ARAM-style modes: champions on the shared bench that you can swap to. */
+  benchEnabled: boolean;
+  benchChampionIds: number[];
+  /** Champion cards offered to you (ARAM card picks). Empty when the mode lets you pick freely. */
+  choiceChampionIds: number[];
+  allowRerolling: boolean;
+  rerollsRemaining: number;
   /** Swaps with teammates that are currently possible or pending (INVALID ones are omitted). */
   swaps: SwapOption[];
   /** Short human-readable description of whose turn it is. */
@@ -121,4 +128,6 @@ export type ClientMessage =
   | { type: 'acceptReadyCheck'; requestId: string }
   | { type: 'declineReadyCheck'; requestId: string }
   | { type: 'swap'; requestId: string; kind: SwapKind; swapId: number; op: SwapOperation }
+  | { type: 'benchSwap'; requestId: string; championId: number }
+  | { type: 'reroll'; requestId: string }
   | { type: 'ping'; requestId: string };

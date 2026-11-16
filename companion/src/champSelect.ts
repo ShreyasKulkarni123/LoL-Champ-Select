@@ -38,6 +38,13 @@ export interface LcuSession {
   trades?: LcuSwap[];
   pickOrderSwaps?: LcuSwap[];
   positionSwaps?: LcuSwap[];
+  benchEnabled?: boolean;
+  benchChampions?: Array<{ championId: number; isPriority?: boolean }>;
+  /** Older clients sent the bench as a plain id list. */
+  benchChampionIds?: number[];
+  allowSubsetChampionPicks?: boolean;
+  allowRerolling?: boolean;
+  rerollsRemaining?: number;
   isSpectating?: boolean;
   myTeam: LcuMember[];
   theirTeam: LcuMember[];
@@ -47,6 +54,8 @@ export interface LcuSession {
     phase?: string;
     adjustedTimeLeftInPhase?: number;
     totalTimeInPhase?: number;
+    internalNowInEpochMs?: number;
+    /** Older name of internalNowInEpochMs. */
     internalNowInEpoch?: number;
     isInfinite?: boolean;
   };
@@ -57,6 +66,8 @@ export interface ViewExtras {
   names?: Map<string, string | null>;
   pickableChampionIds?: number[];
   bannableChampionIds?: number[];
+  /** Card choices from /subset-champion-list (only used when the session allows subset picks). */
+  subsetChampionIds?: number[];
   now?: number;
 }
 
@@ -99,7 +110,14 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
 
     // When there are no pick actions for the actor (blind pick summary, FINALIZATION in
     // some queues, spectating) fall back to the member's championId.
-    const championId = completedPick?.championId ?? (picks.length === 0 ? m.championId : 0);
+    // After a bench swap or champion trade the member's championId is the source of truth.
+    const championId = completedPick
+      ? m.championId > 0
+        ? m.championId
+        : completedPick.championId
+      : picks.length === 0
+        ? m.championId
+        : 0;
     const hover = championId ? 0 : (openPick?.championId ?? (m.championPickIntent || 0));
 
     let name: string | null = null;
@@ -145,7 +163,8 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
   const timer = session.timer ?? {};
   const phase = timer.phase ?? 'UNKNOWN';
   let timeLeftMs = timer.adjustedTimeLeftInPhase ?? 0;
-  if (timer.internalNowInEpoch) timeLeftMs -= now - timer.internalNowInEpoch;
+  const serverNow = timer.internalNowInEpochMs ?? timer.internalNowInEpoch;
+  if (serverNow) timeLeftMs -= now - serverNow;
   if (timer.isInfinite) timeLeftMs = 0;
 
   return {
@@ -162,6 +181,13 @@ export function buildChampSelectView(session: LcuSession, extras: ViewExtras = {
     bannableChampionIds: extras.bannableChampionIds ?? [],
     unavailableChampionIds: [...unavailable],
     isSpectating: Boolean(session.isSpectating),
+    benchEnabled: Boolean(session.benchEnabled),
+    benchChampionIds: (session.benchChampions?.map((b) => b.championId) ?? session.benchChampionIds ?? []).filter(
+      (id) => id > 0,
+    ),
+    choiceChampionIds: session.allowSubsetChampionPicks ? (extras.subsetChampionIds ?? []).filter((id) => id > 0) : [],
+    allowRerolling: Boolean(session.allowRerolling),
+    rerollsRemaining: session.rerollsRemaining ?? 0,
     swaps: collectSwaps(session),
     activeActionType: inProgress.some((a) => a.type === 'ban')
       ? 'ban'

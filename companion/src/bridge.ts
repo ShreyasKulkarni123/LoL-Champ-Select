@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { LcuClient, type LcuEvent } from './lcu.js';
 import { findCredentials } from './lockfile.js';
 import { buildChampSelectView, type LcuSession } from './champSelect.js';
@@ -9,7 +12,8 @@ const READY_CHECK_DURATION_S = 12;
 const SWAP_PATHS: Record<SwapKind, { route: string; field: 'trades' | 'pickOrderSwaps' | 'positionSwaps' }> = {
   pickOrder: { route: 'pick-order-swaps', field: 'pickOrderSwaps' },
   position: { route: 'position-swaps', field: 'positionSwaps' },
-  champion: { route: 'trades', field: 'trades' },
+  // The session still lists champion trades under `trades`, but the endpoint is `champion-swaps`.
+  champion: { route: 'champion-swaps', field: 'trades' },
 };
 const SWAP_OPS: SwapOperation[] = ['request', 'accept', 'decline', 'cancel'];
 
@@ -35,6 +39,7 @@ export class Bridge extends EventEmitter {
   private names = new Map<string, string | null>();
   private pickable: number[] = [];
   private bannable: number[] = [];
+  private subset: number[] = [];
   private stopped = false;
   private emitTimer: NodeJS.Timeout | null = null;
   private refreshSeq = 0;
@@ -73,6 +78,7 @@ export class Bridge extends EventEmitter {
             names: this.names,
             pickableChampionIds: this.pickable,
             bannableChampionIds: this.bannable,
+            subsetChampionIds: this.subset,
           })
         : null,
     };
@@ -171,6 +177,8 @@ export class Bridge extends EventEmitter {
     if (this.options.debug) this.log(`event ${e.eventType} ${e.uri}`);
     if (e.uri === '/lol-champ-select/v1/session') {
       this.session = e.eventType === 'Delete' ? null : (e.data as LcuSession);
+      if (!this.session) this.subset = [];
+      else if (this.options.debug) void this.dumpSession(this.session);
       this.emitState();
       if (this.session) await this.refreshChampSelectExtras();
     } else if (e.uri === '/lol-gameflow/v1/gameflow-phase') {
@@ -230,9 +238,13 @@ export class Bridge extends EventEmitter {
     if (!lcu || !session) return;
     const seq = ++this.refreshSeq;
 
-    const [pickable, bannable] = await Promise.all([
+    const [pickable, bannable, subset] = await Promise.all([
       lcu.get<number[]>('/lol-champ-select/v1/pickable-champion-ids').catch(() => this.pickable),
       lcu.get<number[]>('/lol-champ-select/v1/bannable-champion-ids').catch(() => this.bannable),
+      // ARAM champion cards: the champions you are offered to choose from.
+      session.allowSubsetChampionPicks
+        ? lcu.get<number[]>('/lol-lobby-team-builder/champ-select/v1/subset-champion-list').catch(() => this.subset)
+        : Promise.resolve([] as number[]),
     ]);
 
     const unknown = [...session.myTeam, ...session.theirTeam].filter(
@@ -254,6 +266,8 @@ export class Bridge extends EventEmitter {
     if (seq !== this.refreshSeq) return; // a newer refresh superseded this one
     this.pickable = pickable;
     this.bannable = bannable;
+    if (this.options.debug && subset.join() !== this.subset.join()) this.log(`champion cards: ${subset.join(', ')}`);
+    this.subset = Array.isArray(subset) ? subset : [];
     this.emitState();
   }
 
@@ -309,7 +323,34 @@ export class Bridge extends EventEmitter {
     const session = this.requireSession();
     const entry = (session[paths.field] ?? []).find((s) => s.id === swapId);
     if (!entry) throw new Error('That swap is no longer available');
+    if (!Number.isInteger(swapId)) throw new Error('Invalid swap');
     await this.requireLcu().request('POST', `/lol-champ-select/v1/session/${paths.route}/${swapId}/${op}`);
+  }
+
+  /** ARAM: take a champion from the shared bench. */
+  async benchSwap(championId: number) {
+    const session = this.requireSession();
+    if (!session.benchEnabled) throw new Error('This mode has no bench');
+    if (!Number.isInteger(championId) || championId <= 0) throw new Error('Invalid champion');
+    await this.requireLcu().request('POST', `/lol-champ-select/v1/session/bench/swap/${championId}`);
+  }
+
+  /** ARAM (older reroll system): reroll your random champion. */
+  async reroll() {
+    const session = this.requireSession();
+    if (!session.allowRerolling) throw new Error('Rerolling is not available in this mode');
+    await this.requireLcu().request('POST', '/lol-champ-select/v1/session/my-selection/reroll');
+  }
+
+  /** --debug: keep the latest raw session on disk so unfamiliar modes can be inspected. */
+  private async dumpSession(session: LcuSession) {
+    try {
+      const dir = path.join(process.env.LOLCS_CONFIG_DIR ?? path.join(os.homedir(), '.lol-champ-select'), 'debug');
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, 'champ-select-session.json'), JSON.stringify(session, null, 2));
+    } catch {
+      /* debugging aid only */
+    }
   }
 
   async acceptReadyCheck() {
