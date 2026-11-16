@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, Vibration, View } from 'react-native';
 import type { ReadyCheckView } from '../protocol';
 import type { CommandResult } from '../useCompanion';
 import { useCountdown } from '../useCompanion';
@@ -65,6 +65,13 @@ export function ReadyCheckScreen({
   const left = useCountdown(readyCheck.timeLeftMs, receivedAt);
   const [error, setError] = useState<string | null>(null);
   const responded = readyCheck.playerResponse !== 'None';
+
+  // Buzz repeatedly until you accept or decline (or the ready check ends), so you notice the queue pop.
+  useEffect(() => {
+    if (responded) return;
+    Vibration.vibrate([0, 700, 400, 700, 400, 700, 1200], true);
+    return () => Vibration.cancel();
+  }, [responded]);
 
   const respond = async (type: 'acceptReadyCheck' | 'declineReadyCheck') => {
     setError(null);
