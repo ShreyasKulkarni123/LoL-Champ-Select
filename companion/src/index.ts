@@ -11,6 +11,7 @@ export interface CompanionOptions {
   host?: string;
   resetToken?: boolean;
   quiet?: boolean;
+  debug?: boolean;
 }
 
 export async function runCompanion(opts: CompanionOptions = {}) {
@@ -18,7 +19,7 @@ export async function runCompanion(opts: CompanionOptions = {}) {
   const port = opts.port ?? cfg.port;
   const host = opts.host ?? '0.0.0.0';
 
-  const bridge = new Bridge({ lockfile: opts.lockfile ?? process.env.LCU_LOCKFILE });
+  const bridge = new Bridge({ lockfile: opts.lockfile ?? process.env.LCU_LOCKFILE, debug: opts.debug });
   bridge.on('log', (m: string) => console.log(`[companion] ${m}`));
   const server = await startServer(bridge, { port, host, token: cfg.token });
   bridge.start();
@@ -49,6 +50,7 @@ if (isMain) {
       port: { type: 'string' },
       host: { type: 'string' },
       'reset-token': { type: 'boolean' },
+      debug: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -58,7 +60,8 @@ if (isMain) {
   --lockfile <path>   Path to the League Client lockfile (auto-detected by default)
   --port <n>          Port for the phone to connect to (default 8787)
   --host <addr>       Interface to listen on (default 0.0.0.0)
-  --reset-token       Generate a new pairing code, un-pairing existing phones`);
+  --reset-token       Generate a new pairing code, un-pairing existing phones
+  --debug             Log every League Client event the companion receives`);
     process.exit(0);
   }
   runCompanion({
@@ -66,6 +69,7 @@ if (isMain) {
     port: values.port ? Number(values.port) : undefined,
     host: values.host,
     resetToken: values['reset-token'],
+    debug: values.debug,
   }).catch((err) => {
     console.error(err);
     process.exit(1);

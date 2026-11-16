@@ -10,7 +10,7 @@
     "dev:mock": "tsx src/mock/index.ts --with-companion",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "engines": {
     "node": ">=22"

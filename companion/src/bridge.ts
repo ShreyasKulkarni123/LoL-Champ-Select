@@ -38,8 +38,9 @@ export class Bridge extends EventEmitter {
   private stopped = false;
   private emitTimer: NodeJS.Timeout | null = null;
   private refreshSeq = 0;
+  private readyCheckPoll: NodeJS.Timeout | null = null;
 
-  constructor(private readonly options: { lockfile?: string; pollMs?: number } = {}) {
+  constructor(private readonly options: { lockfile?: string; pollMs?: number; debug?: boolean } = {}) {
     super();
   }
 
@@ -53,11 +54,13 @@ export class Bridge extends EventEmitter {
 
   getState(): AppState {
     let readyCheck: ReadyCheckView | null = null;
-    if (this.readyCheck && this.gameflowPhase === 'ReadyCheck') {
+    if (this.gameflowPhase === 'ReadyCheck') {
+      // Some clients never publish ready-check events; the gameflow phase alone is enough to show Accept.
+      const rc = this.readyCheck;
       readyCheck = {
-        state: this.readyCheck.state,
-        playerResponse: this.readyCheck.playerResponse,
-        timeLeftMs: Math.max(0, (READY_CHECK_DURATION_S - (this.readyCheck.timer ?? 0)) * 1000),
+        state: rc?.state ?? 'InProgress',
+        playerResponse: rc?.playerResponse ?? 'None',
+        timeLeftMs: rc ? Math.max(0, (READY_CHECK_DURATION_S - (rc.timer ?? 0)) * 1000) : 0,
       };
     }
     return {
@@ -82,6 +85,7 @@ export class Bridge extends EventEmitter {
 
   stop() {
     this.stopped = true;
+    this.stopReadyCheckPoll();
     this.lcu?.close();
   }
 
@@ -107,6 +111,7 @@ export class Bridge extends EventEmitter {
           this.log(`Could not connect to League Client: ${(err as Error).message}`);
         }
         this.lcu = null;
+        this.stopReadyCheckPoll();
         this.session = null;
         this.readyCheck = null;
         this.gameflowPhase = 'None';
@@ -151,11 +156,8 @@ export class Bridge extends EventEmitter {
     } catch {
       this.gameflowPhase = 'None';
     }
-    try {
-      this.readyCheck = await lcu.get<LcuReadyCheck>('/lol-matchmaking/v1/ready-check');
-    } catch {
-      this.readyCheck = null;
-    }
+    await this.fetchReadyCheck();
+    this.syncReadyCheckPoll();
     try {
       this.session = await lcu.get<LcuSession>('/lol-champ-select/v1/session');
       await this.refreshChampSelectExtras();
@@ -166,6 +168,7 @@ export class Bridge extends EventEmitter {
   }
 
   private async onEvent(e: LcuEvent) {
+    if (this.options.debug) this.log(`event ${e.eventType} ${e.uri}`);
     if (e.uri === '/lol-champ-select/v1/session') {
       this.session = e.eventType === 'Delete' ? null : (e.data as LcuSession);
       this.emitState();
@@ -173,10 +176,51 @@ export class Bridge extends EventEmitter {
     } else if (e.uri === '/lol-gameflow/v1/gameflow-phase') {
       this.gameflowPhase = typeof e.data === 'string' ? e.data : 'None';
       this.emitState();
+      this.syncReadyCheckPoll();
+      // Don't depend on the session event alone either: fetch it as soon as champ select starts.
+      if (this.gameflowPhase === 'ChampSelect' && !this.session) {
+        try {
+          this.session = await this.lcu!.get<LcuSession>('/lol-champ-select/v1/session');
+          this.emitState();
+          await this.refreshChampSelectExtras();
+        } catch {
+          /* the session event will follow */
+        }
+      }
     } else if (e.uri === '/lol-matchmaking/v1/ready-check') {
       this.readyCheck = e.eventType === 'Delete' ? null : (e.data as LcuReadyCheck);
       this.emitState();
     }
+  }
+
+  private async fetchReadyCheck() {
+    const lcu = this.lcu;
+    if (!lcu) return;
+    try {
+      this.readyCheck = await lcu.get<LcuReadyCheck>('/lol-matchmaking/v1/ready-check');
+    } catch {
+      this.readyCheck = null;
+    }
+  }
+
+  /** While a ready check is open, poll it every second (timer and accept state) instead of relying on events. */
+  private syncReadyCheckPoll() {
+    if (this.gameflowPhase !== 'ReadyCheck') {
+      this.stopReadyCheckPoll();
+      return;
+    }
+    if (this.readyCheckPoll) return;
+    const tick = async () => {
+      await this.fetchReadyCheck();
+      this.emitState();
+    };
+    void tick();
+    this.readyCheckPoll = setInterval(() => void tick(), 1000);
+  }
+
+  private stopReadyCheckPoll() {
+    if (this.readyCheckPoll) clearInterval(this.readyCheckPoll);
+    this.readyCheckPoll = null;
   }
 
   /** Pickable / bannable lists and teammate names change during champ select; refresh them. */

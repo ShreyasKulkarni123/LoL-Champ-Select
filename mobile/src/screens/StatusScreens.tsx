@@ -10,6 +10,7 @@ const PHASE_TEXT: Record<string, [string, string]> = {
   Lobby: ['In lobby', 'Start queueing on your computer — you can accept the match from here.'],
   Matchmaking: ['In queue', "Finding a match… You'll be able to accept it here."],
   CheckedIntoTournament: ['Checked into tournament', 'Waiting for the tournament to start.'],
+  ReadyCheck: ['Match found!', 'Loading the accept screen…'],
   ChampSelect: ['Champ select', 'Loading champ select…'],
   GameStart: ['Game starting', 'Head back to your computer!'],
   InProgress: ['Game in progress', 'Good luck, have fun!'],
@@ -74,7 +75,11 @@ export function ReadyCheckScreen({
   return (
     <View style={styles.center}>
       <Text style={styles.title}>Match found!</Text>
-      <Text style={styles.timer}>{Math.ceil(left / 1000)}</Text>
+      {readyCheck.timeLeftMs > 0 ? (
+        <Text style={styles.timer}>{Math.ceil(left / 1000)}</Text>
+      ) : (
+        <View style={{ height: 40 }} />
+      )}
       {responded ? (
         <Text style={[styles.detail, { color: readyCheck.playerResponse === 'Accepted' ? colors.success : colors.danger }]}>
           {readyCheck.playerResponse === 'Accepted' ? 'Accepted — waiting for other players…' : 'Declined'}
