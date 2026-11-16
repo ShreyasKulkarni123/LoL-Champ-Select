@@ -42,6 +42,9 @@ That's why the project has two parts:
 
 ## Quick start
 
+**On Windows, after the first-time setup:** double-click `Start Champ Select Remote.bat` in the repo folder (or a
+desktop shortcut to it). It opens the companion and the Expo app server in their own windows.
+
 ### 1. Run the companion on your PC
 
 Requires [Node.js](https://nodejs.org) 22 or newer.
